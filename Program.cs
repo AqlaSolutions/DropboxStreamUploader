@@ -69,7 +69,7 @@ namespace DropboxStreamUploader
 
 
                         var startedAt = Stopwatch.StartNew();
-
+                        var fileName = $"video{DateTime.Now:yyyyMMddHHmm}.zip";
                         var filesToDelete = new HashSet<string>();
 
                         using (var dropbox = new DropboxClient(token))
@@ -133,8 +133,8 @@ namespace DropboxStreamUploader
                                     Console.WriteLine("Ignoring cleanup error: " + e);
                                 }
                             }
-
-                            if (mpegProcess.WaitForExit(Math.Max(10000 - (int) startedAt.ElapsedMilliseconds, 1)))
+                            
+                            if (await mpegProcess.WaitForExitAsync(new CancellationTokenSource(Math.Max(10000 - (int) startedAt.ElapsedMilliseconds, 1)).Token))
                                 throw new Exception("ffmpeg terminated abnormally");
 
                             ZipStrings.UseUnicode = true;
@@ -143,7 +143,6 @@ namespace DropboxStreamUploader
                             byte[] msBuffer = new byte[1000 * 1000 * 50];
                             int zipBufferSize = 1000 * 1000 * 50;
 
-                            var fileName = "video" + DateTime.Now.ToString("yyyyMMddHHmmssfff") + ".zip";
 
                             Stopwatch signalledExitAt = null;
 
@@ -193,17 +192,18 @@ namespace DropboxStreamUploader
                                             entry.AESKeySize = 256;
                                             zipWriter.PutNextEntry(entry);
 
-                                            void ExitCheck()
+                                            async Task ExitCheck()
                                             {
-                                                if ((signalledExitAt == null) && (startedAt.Elapsed.TotalSeconds >= SecondsPerFile || mpegSource.NewDataLength == 0))
+                                                if ((signalledExitAt == null) && (startedAt.Elapsed.TotalSeconds > SecondsPerFile || mpegSource.NewDataLength == 0))
                                                 {
                                                     Console.WriteLine("Signaling exit to ffmpeg");
                                                     signalledExitAt = Stopwatch.StartNew();
                                                     _ = DoRecording(latestCleanup);
+                                                    await Task.Delay(1000);
                                                     mpegProcess.StandardInput.Write('q');
 
                                                 }
-                                                else if (signalledExitAt?.Elapsed.TotalSeconds > 10 && !mpegProcess.HasExited)
+                                                else if (signalledExitAt?.Elapsed.TotalSeconds >= 5 && !mpegProcess.HasExited)
                                                 {
                                                     try
                                                     {
@@ -224,20 +224,21 @@ namespace DropboxStreamUploader
                                             while (!mpegProcess.HasExited || mpegSource.NewDataLength > 0)
                                             {
                                                 // wait at least this time
-                                                await Task.Delay(TimeSpan.FromSeconds(ChunkMinIntervalSeconds));
+                                                await Task.Delay(TimeSpan.FromSeconds(signalledExitAt == null ? ChunkMinIntervalSeconds : 1));
 
                                                 while ((mpegSource.NewDataLength < ChunkSize) && (waitingFrom.Elapsed.TotalSeconds < ChunkMaxIntervalSeconds)
-                                                    && !mpegProcess.HasExited)
+                                                    && !mpegProcess.HasExited
+                                                    && signalledExitAt == null)
                                                 {
                                                     await Task.Delay(100);
-                                                    ExitCheck();
+                                                    await ExitCheck();
                                                 }
                                                 
                                                 
                                                 int read;
                                                 do
                                                 {
-                                                    ExitCheck();
+                                                    await ExitCheck();
                                                     read = mpegSource.Advance();
                                                     if (read == 0) break;
 
@@ -319,17 +320,17 @@ namespace DropboxStreamUploader
 
 
                                     Console.WriteLine("Recording successfully finished, deleting " + offlineFilePath);
-                                    offlineFileWriter.SetLength(0);
+                                    //offlineFileWriter.SetLength(0);
                                 }
 
                                 try
                                 {
-                                    File.Move(offlineFilePath, reservedFilePath);
+                                    //File.Move(offlineFilePath, reservedFilePath);
                                     Console.WriteLine("Successfully marked for overwriting");
                                 }
                                 catch
                                 {
-                                    File.Delete(offlineFilePath);
+                                    //File.Delete(offlineFilePath);
                                     Console.WriteLine("Can't mark for overwriting, just deleting");
                                 }
 
