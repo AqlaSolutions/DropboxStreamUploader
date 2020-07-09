@@ -320,17 +320,17 @@ namespace DropboxStreamUploader
 
 
                                     Console.WriteLine("Recording successfully finished, deleting " + offlineFilePath);
-                                    //offlineFileWriter.SetLength(0);
+                                    offlineFileWriter.SetLength(0);
                                 }
 
                                 try
                                 {
-                                    //File.Move(offlineFilePath, reservedFilePath);
+                                    File.Move(offlineFilePath, reservedFilePath);
                                     Console.WriteLine("Successfully marked for overwriting");
                                 }
                                 catch
                                 {
-                                    //File.Delete(offlineFilePath);
+                                    File.Delete(offlineFilePath);
                                     Console.WriteLine("Can't mark for overwriting, just deleting");
                                 }
 
