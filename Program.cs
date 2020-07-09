@@ -28,6 +28,7 @@ namespace DropboxStreamUploader
 
                 var offlineRecordsDirectory = args[5];
 
+                string reservedFilePath = Path.Combine(offlineRecordsDirectory, "reserved.tmp");
 
                 await DoRecording(null);
                 await Task.Delay(-1);
@@ -158,131 +159,162 @@ namespace DropboxStreamUploader
                                 long offset = 0;
 
                                 string offlineFilePath = Path.Combine(offlineRecordsDirectory, Path.GetFileNameWithoutExtension(fileName) + ".mkv");
-                                using (var offlineFileWriter = File.Create(offlineFilePath, zipBufferSize))
-                                using (var zipWriter = new ZipOutputStream(zipWriterUnderlyingStream, zipBufferSize)
-                                                       { IsStreamOwner = false, Password = password, UseZip64 = UseZip64.On })
+
+                                FileStream CreateOfflineFileStream()
                                 {
                                     try
                                     {
-                                        zipWriterUnderlyingStream.CopyTo = bufferStream;
-                                        zipWriter.SetLevel(0);
-                                        var entry = entryFactory.MakeFileEntry("video.mkv", '/' + "video.mkv", false);
-                                        entry.AESKeySize = 256;
-                                        zipWriter.PutNextEntry(entry);
-
-                                        void SignalExit()
-                                        {
-                                            Console.WriteLine("Signaling exit to ffmpeg");
-                                            signalledExitAt = Stopwatch.StartNew();
-                                            _ = DoRecording(latestCleanup);
-                                            mpegProcess.StandardInput.Write('q');
-                                        }
-
-                                        while (!mpegProcess.HasExited || mpegSource.IsDataAvailable)
-                                        {
-                                            int read;
-                                            await Task.Delay(TimeSpan.FromSeconds(ChunkIntervalSeconds));
-
-                                            if (!mpegSource.IsDataAvailable && !mpegProcess.HasExited && signalledExitAt == null)
-                                            {
-
-                                                Console.WriteLine("No data available for " + offlineFilePath);
-                                                SignalExit();
-                                            }
-
-                                            do
-                                            {
-                                                read = mpegSource.Advance();
-                                                if ((signalledExitAt == null) && (startedAt.Elapsed.TotalSeconds >= SecondsPerFile))
-                                                    SignalExit();
-                                                else if (signalledExitAt?.Elapsed.TotalSeconds > 10)
-                                                    try
-                                                    {
-                                                        stopReading.Cancel();
-                                                        mpegProcess.Kill();
-                                                    }
-                                                    catch
-                                                    {
-                                                    }
-
-                                                if (read == 0) break;
-
-                                                zipWriter.Write(mpegSource.Buffer, 0, read);
-                                                zipWriter.Flush();
-
-                                                //bufferStream.WriteTo(offlineFileWriter);
-                                                offlineFileWriter.Write(mpegSource.Buffer, 0, read);
-                                                offlineFileWriter.Flush(true);
-
-                                                bufferStream.Position = 0;
-                                                var length = bufferStream.Length;
-                                                if (session == null)
-                                                {
-                                                    session = await AsyncEx.Retry(() =>
-                                                    {
-                                                        var copy = new MemoryStream(msBuffer, 0, (int) bufferStream.Length);
-                                                        return dropbox.Files.UploadSessionStartAsync(new UploadSessionStartArg(), copy);
-                                                    });
-                                                }
-                                                else
-                                                {
-                                                    await AsyncEx.Retry(() =>
-                                                    {
-                                                        var copy = new MemoryStream(msBuffer, 0, (int)bufferStream.Length);
-                                                        return dropbox.Files.UploadSessionAppendV2Async(new UploadSessionCursor(session.SessionId, (ulong) offset), false,
-                                                            copy);
-                                                    });
-                                                }
-
-                                                offset += length;
-                                                zipWriterUnderlyingStream.CopyTo = bufferStream = new MemoryStream(msBuffer);
-                                                bufferStream.SetLength(0);
-                                            } while (read >= 1024 * 1024);
-                                        }
+                                        // we attempt to overwrite same file again and again so it can't be restored
+                                        File.Move(reservedFilePath, offlineFilePath);
+                                        var f = new FileStream(offlineFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None, zipBufferSize);
+                                        f.SetLength(0);
+                                        Console.WriteLine("Overwriting ok");
+                                        return f;
                                     }
-                                    finally
+                                    catch
                                     {
-                                        // disposing ZipOutputStream causes writing to bufferStream
-                                        if (!bufferStream.CanRead && !bufferStream.CanWrite)
-                                            zipWriterUnderlyingStream.CopyTo = bufferStream = new MemoryStream(msBuffer);
+                                        Console.WriteLine("Overwriting previous file failed, creating new");
+                                        return new FileStream(offlineFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, zipBufferSize);
+                                    }
+                                }
 
+                                using (var offlineFileWriter = CreateOfflineFileStream())
+                                {
+                                    using (var zipWriter = new ZipOutputStream(zipWriterUnderlyingStream, zipBufferSize)
+                                                           { IsStreamOwner = false, Password = password, UseZip64 = UseZip64.On })
+                                    {
                                         try
                                         {
-                                            bufferStream.SetLength(0);
+                                            zipWriterUnderlyingStream.CopyTo = bufferStream;
+                                            zipWriter.SetLevel(0);
+                                            var entry = entryFactory.MakeFileEntry("video.mkv", '/' + "video.mkv", false);
+                                            entry.AESKeySize = 256;
+                                            zipWriter.PutNextEntry(entry);
 
-                                            zipWriter.CloseEntry();
-                                            zipWriter.Finish();
-                                            zipWriter.Close();
+                                            void SignalExit()
+                                            {
+                                                Console.WriteLine("Signaling exit to ffmpeg");
+                                                signalledExitAt = Stopwatch.StartNew();
+                                                _ = DoRecording(latestCleanup);
+                                                mpegProcess.StandardInput.Write('q');
+                                            }
 
-                                            //bufferStream.WriteTo(offlineFileWriter);
-                                            //offlineFileWriter.Flush(true);
+                                            while (!mpegProcess.HasExited || mpegSource.IsDataAvailable)
+                                            {
+                                                int read;
+                                                await Task.Delay(TimeSpan.FromSeconds(ChunkIntervalSeconds));
+
+                                                if (!mpegSource.IsDataAvailable && !mpegProcess.HasExited && signalledExitAt == null)
+                                                {
+
+                                                    Console.WriteLine("No data available for " + offlineFilePath);
+                                                    SignalExit();
+                                                }
+
+                                                do
+                                                {
+                                                    read = mpegSource.Advance();
+                                                    if ((signalledExitAt == null) && (startedAt.Elapsed.TotalSeconds >= SecondsPerFile))
+                                                        SignalExit();
+                                                    else if (signalledExitAt?.Elapsed.TotalSeconds > 10)
+                                                        try
+                                                        {
+                                                            stopReading.Cancel();
+                                                            mpegProcess.Kill();
+                                                        }
+                                                        catch
+                                                        {
+                                                        }
+
+                                                    if (read == 0) break;
+
+                                                    zipWriter.Write(mpegSource.Buffer, 0, read);
+                                                    zipWriter.Flush();
+
+                                                    //bufferStream.WriteTo(offlineFileWriter);
+                                                    offlineFileWriter.Write(mpegSource.Buffer, 0, read);
+                                                    offlineFileWriter.Flush(true);
+
+                                                    bufferStream.Position = 0;
+                                                    var length = bufferStream.Length;
+                                                    if (session == null)
+                                                    {
+                                                        session = await AsyncEx.Retry(() =>
+                                                        {
+                                                            var copy = new MemoryStream(msBuffer, 0, (int) bufferStream.Length);
+                                                            return dropbox.Files.UploadSessionStartAsync(new UploadSessionStartArg(), copy);
+                                                        });
+                                                    }
+                                                    else
+                                                    {
+                                                        await AsyncEx.Retry(() =>
+                                                        {
+                                                            var copy = new MemoryStream(msBuffer, 0, (int) bufferStream.Length);
+                                                            return dropbox.Files.UploadSessionAppendV2Async(new UploadSessionCursor(session.SessionId, (ulong) offset), false,
+                                                                copy);
+                                                        });
+                                                    }
+
+                                                    offset += length;
+                                                    zipWriterUnderlyingStream.CopyTo = bufferStream = new MemoryStream(msBuffer);
+                                                    bufferStream.SetLength(0);
+                                                } while (read >= 1024 * 1024);
+                                            }
                                         }
-                                        catch
+                                        finally
                                         {
+                                            // disposing ZipOutputStream causes writing to bufferStream
+                                            if (!bufferStream.CanRead && !bufferStream.CanWrite)
+                                                zipWriterUnderlyingStream.CopyTo = bufferStream = new MemoryStream(msBuffer);
+
+                                            try
+                                            {
+                                                bufferStream.SetLength(0);
+
+                                                zipWriter.CloseEntry();
+                                                zipWriter.Finish();
+                                                zipWriter.Close();
+
+                                                //bufferStream.WriteTo(offlineFileWriter);
+                                                //offlineFileWriter.Flush(true);
+                                            }
+                                            catch
+                                            {
+                                            }
                                         }
                                     }
-                                }
 
 
-                                if (session != null) // can be null if no data
-                                {
-                                    bufferStream.Position = 0;
-                                    var commitInfo = new CommitInfo(Path.Combine(dropboxDirectory, fileName),
-                                        WriteMode.Overwrite.Instance,
-                                        false,
-                                        DateTime.UtcNow);
-
-                                    await AsyncEx.Retry(() =>
+                                    if (session != null) // can be null if no data
                                     {
-                                        var copy = new MemoryStream(msBuffer, 0, (int)bufferStream.Length);
-                                        return dropbox.Files.UploadSessionFinishAsync(new UploadSessionCursor(session.SessionId, (ulong) offset), commitInfo, copy);
-                                    });
+                                        bufferStream.Position = 0;
+                                        var commitInfo = new CommitInfo(Path.Combine(dropboxDirectory, fileName),
+                                            WriteMode.Overwrite.Instance,
+                                            false,
+                                            DateTime.UtcNow);
+
+                                        await AsyncEx.Retry(() =>
+                                        {
+                                            var copy = new MemoryStream(msBuffer, 0, (int) bufferStream.Length);
+                                            return dropbox.Files.UploadSessionFinishAsync(new UploadSessionCursor(session.SessionId, (ulong) offset), commitInfo, copy);
+                                        });
+                                    }
+
+
+                                    Console.WriteLine("Recording successfully finished, deleting " + offlineFilePath);
+                                    offlineFileWriter.SetLength(0);
                                 }
 
-
-                                Console.WriteLine("Recording successfully finished, deleting " + offlineFilePath);
-
-                                File.Delete(offlineFilePath);
+                                try
+                                {
+                                    File.Move(offlineFilePath, reservedFilePath);
+                                    Console.WriteLine("Successfully marked for overwriting");
+                                }
+                                catch
+                                {
+                                    File.Delete(offlineFilePath);
+                                    Console.WriteLine("Can't mark for overwriting, just deleting");
+                                }
 
 
                             }
