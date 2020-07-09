@@ -39,7 +39,6 @@ namespace DropboxStreamUploader
                     var stopReading = new CancellationTokenSource(); 
                     try
                     {
-                        Console.WriteLine("Starting new recording");
                         var mpegStart = new ProcessStartInfo(mpegExe, $"-rtsp_transport tcp -i \"{streamUrl}\" -f matroska -c:v copy -c:a copy - ");
                         mpegStart.UseShellExecute = false;
                         mpegStart.RedirectStandardOutput = true;
@@ -70,14 +69,15 @@ namespace DropboxStreamUploader
 
                         var startedAt = Stopwatch.StartNew();
                         var fileName = $"video{DateTime.Now:yyyyMMddHHmm}.zip";
-                        var filesToDelete = new HashSet<string>();
+                        string offlineFilePath = Path.Combine(offlineRecordsDirectory, Path.GetFileNameWithoutExtension(fileName) + ".mkv");
+                        Console.WriteLine("Started new recording to " + offlineFilePath);
 
                         using (var dropbox = new DropboxClient(token))
                         {
                             if (latestCleanup == null || (DateTime.UtcNow - latestCleanup > TimeSpan.FromHours(1)))
                             {
                                 Console.WriteLine("Cleaning up");
-
+                                
                                 try
                                 {
                                     await dropbox.Files.CreateFolderV2Async(dropboxDirectory.TrimEnd('/'));
@@ -86,6 +86,7 @@ namespace DropboxStreamUploader
                                 {
                                 }
 
+                                var filesToDelete = new HashSet<string>();
                                 try
                                 {
 
@@ -159,8 +160,6 @@ namespace DropboxStreamUploader
                                 UploadSessionStartResult session = null;
                                 long offset = 0;
 
-                                string offlineFilePath = Path.Combine(offlineRecordsDirectory, Path.GetFileNameWithoutExtension(fileName) + ".mkv");
-
                                 FileStream CreateOfflineFileStream()
                                 {
                                     try
@@ -169,12 +168,10 @@ namespace DropboxStreamUploader
                                         File.Move(reservedFilePath, offlineFilePath);
                                         var f = new FileStream(offlineFilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None, zipBufferSize);
                                         f.SetLength(0);
-                                        Console.WriteLine("Overwriting ok");
                                         return f;
                                     }
                                     catch
                                     {
-                                        Console.WriteLine("Overwriting previous file failed, creating new");
                                         return new FileStream(offlineFilePath, FileMode.Create, FileAccess.ReadWrite, FileShare.None, zipBufferSize);
                                     }
                                 }
@@ -320,18 +317,24 @@ namespace DropboxStreamUploader
 
 
                                     Console.WriteLine("Recording successfully finished, deleting " + offlineFilePath);
-                                    offlineFileWriter.SetLength(0);
+                                    var rng = new Random();
+                                    var overwriteBuffer = new byte[ChunkSize];
+                                    offlineFileWriter.Position = 0;
+                                    long chunks = offlineFileWriter.Length / ChunkSize;
+                                    for (int i = 0; i <= chunks; i++)
+                                    {
+                                        rng.NextBytes(overwriteBuffer);
+                                        offlineFileWriter.Write(overwriteBuffer, 0, ChunkSize);
+                                    }
                                 }
 
                                 try
                                 {
                                     File.Move(offlineFilePath, reservedFilePath);
-                                    Console.WriteLine("Successfully marked for overwriting");
                                 }
                                 catch
                                 {
                                     File.Delete(offlineFilePath);
-                                    Console.WriteLine("Can't mark for overwriting, just deleting");
                                 }
 
 
