@@ -1,6 +1,6 @@
 # DropboxStreamUploader
-Uploads RTSP video stream from IP camera to Dropbox every 30 seconds.
-The stream is splitted into 2-minutes video files. Each video file is encrypted with zip.
+Uploads RTSP video stream from IP camera to Dropbox every 2 MB [min 5, max 30 seconds].
+The stream is splitted into 1-minutes video files. Each video file is encrypted with zip.
 To reduce space usage it automatically deletes zips older than 1 hour but they still can be recovered within 30 days with Dropbox Pro account.
 When upload fails or power shortage happens unencrypted video file is kept locally so can be viewed and deleted later.
 Uses ffmpeg.
