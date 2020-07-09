@@ -31,11 +31,11 @@ namespace DropboxStreamUploader
             }
         }
 
-        public bool IsDataAvailable
+        public int NewDataLength
         {
             get
             {
-                lock (_buffer) return _buffer.Length > 0;
+                lock (_buffer) return (int) _buffer.Length;
             }
         }
 

@@ -147,8 +147,10 @@ namespace DropboxStreamUploader
 
                             Stopwatch signalledExitAt = null;
 
-                            const int ChunkIntervalSeconds = 35;
-                            const int SecondsPerFile = 120;
+                            const int ChunkMinIntervalSeconds = 5;
+                            const int ChunkMaxIntervalSeconds = 30;
+                            const int ChunkSize = 1024 * 1024 * 2;
+                            const int SecondsPerFile = 60;
                             
                             using (var zipWriterUnderlyingStream = new CopyStream())
                             {
@@ -191,42 +193,55 @@ namespace DropboxStreamUploader
                                             entry.AESKeySize = 256;
                                             zipWriter.PutNextEntry(entry);
 
-                                            void SignalExit()
+                                            void ExitCheck()
                                             {
-                                                Console.WriteLine("Signaling exit to ffmpeg");
-                                                signalledExitAt = Stopwatch.StartNew();
-                                                _ = DoRecording(latestCleanup);
-                                                mpegProcess.StandardInput.Write('q');
-                                            }
-
-                                            while (!mpegProcess.HasExited || mpegSource.IsDataAvailable)
-                                            {
-                                                int read;
-                                                await Task.Delay(TimeSpan.FromSeconds(ChunkIntervalSeconds));
-
-                                                if (!mpegSource.IsDataAvailable && !mpegProcess.HasExited && signalledExitAt == null)
+                                                if ((signalledExitAt == null) && (startedAt.Elapsed.TotalSeconds >= SecondsPerFile || mpegSource.NewDataLength == 0))
                                                 {
+                                                    Console.WriteLine("Signaling exit to ffmpeg");
+                                                    signalledExitAt = Stopwatch.StartNew();
+                                                    _ = DoRecording(latestCleanup);
+                                                    mpegProcess.StandardInput.Write('q');
 
-                                                    Console.WriteLine("No data available for " + offlineFilePath);
-                                                    SignalExit();
+                                                }
+                                                else if (signalledExitAt?.Elapsed.TotalSeconds > 10 && !mpegProcess.HasExited)
+                                                {
+                                                    try
+                                                    {
+
+                                                        Console.WriteLine("Killing ffmpeg");
+                                                        stopReading.Cancel();
+                                                        mpegProcess.Kill();
+                                                    }
+                                                    catch
+                                                    {
+                                                    }
                                                 }
 
+                                            }
+
+                                            var waitingFrom = Stopwatch.StartNew();
+
+                                            while (!mpegProcess.HasExited || mpegSource.NewDataLength > 0)
+                                            {
+                                                // wait at least this time
+                                                await Task.Delay(TimeSpan.FromSeconds(ChunkMinIntervalSeconds));
+
+                                                while ((mpegSource.NewDataLength < ChunkSize) && (waitingFrom.Elapsed.TotalSeconds < ChunkMaxIntervalSeconds)
+                                                    && !mpegProcess.HasExited)
+                                                {
+                                                    await Task.Delay(100);
+                                                    ExitCheck();
+                                                }
+                                                
+                                                
+                                                int read;
                                                 do
                                                 {
+                                                    ExitCheck();
                                                     read = mpegSource.Advance();
-                                                    if ((signalledExitAt == null) && (startedAt.Elapsed.TotalSeconds >= SecondsPerFile))
-                                                        SignalExit();
-                                                    else if (signalledExitAt?.Elapsed.TotalSeconds > 10)
-                                                        try
-                                                        {
-                                                            stopReading.Cancel();
-                                                            mpegProcess.Kill();
-                                                        }
-                                                        catch
-                                                        {
-                                                        }
-
                                                     if (read == 0) break;
+
+                                                    Console.WriteLine($"Processing {read} bytes of {offlineFilePath}");
 
                                                     zipWriter.Write(mpegSource.Buffer, 0, read);
                                                     zipWriter.Flush();
@@ -258,7 +273,9 @@ namespace DropboxStreamUploader
                                                     offset += length;
                                                     zipWriterUnderlyingStream.CopyTo = bufferStream = new MemoryStream(msBuffer);
                                                     bufferStream.SetLength(0);
-                                                } while (read >= 1024 * 1024);
+                                                } while (mpegSource.NewDataLength >= ChunkSize);
+
+                                                waitingFrom.Restart();
                                             }
                                         }
                                         finally
