@@ -68,7 +68,7 @@ namespace DropboxStreamUploader
 
 
                         var startedAt = Stopwatch.StartNew();
-                        var fileName = $"video{DateTime.Now:yyyyMMddHHmm}.zip";
+                        var fileName = $"video{DateTime.Now:yyyyMMdd-HHmmss}.zip";
                         string offlineFilePath = Path.Combine(offlineRecordsDirectory, Path.GetFileNameWithoutExtension(fileName) + ".mkv");
                         Console.WriteLine("Started new recording to " + offlineFilePath);
 
